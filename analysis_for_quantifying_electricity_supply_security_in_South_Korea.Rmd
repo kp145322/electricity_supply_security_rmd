@@ -1,0 +1,899 @@
+---
+title: "Analysis for quantifying electricity supply security in South Korea"
+author: "Kenneth Piech"
+date: "10/4/2021"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+This is an R markdown document recording analysis for *Quantifying electricity 
+supply security in South Korea: historical values and projections* by Kenneth 
+Piech.
+
+In section 1 we will load packages and data to prepare for analysis. In section 
+2 we format data and perform calculations to prepare for analysis. In section 3
+we calculate and visualize values of ESMC, and we calculate
+and visualize values of ESPI in section 4. In section 5 we create a table 
+documenting the results of our ESMC calculations for each fuel type, and in 
+section 6 we produce a visualization of electricity generation by fuel type for
+South Korea. 
+
+# 1. Prepare for analysis
+
+
+### 1.1 Load packages
+
+
+```{r install_and_load_packages}
+
+# install packages
+
+# install.packages("dplyr")
+# install.packages("here")
+# install.packages("hrbrthemes")
+# install.packages("janitor")
+# install.packages("skimr")
+# install.packages("tidyverse")
+# install.packages("viridis")
+# install.packages("webshot")
+
+#load packages
+
+library(dplyr)
+library(ggplot2)
+library(gt)
+library(hrbrthemes)
+library(janitor)
+library(readr)
+library(tidyr)
+library(tidyverse)
+library(viridis)
+library(webshot)
+```
+
+```{r set_times_new_roman}
+
+#use Times New Roman font for visualizations
+
+windowsFonts(A = windowsFont("Times New Roman"))
+
+hrbrthemes::import_roboto_condensed()
+
+library(webshot)
+
+webshot::install_phantomjs(force = TRUE)
+```
+
+
+### 1.2 Import data
+
+
+All world bank and EIA data sets were cleaned and placed in standardized format 
+for merging and calculations. 
+
+```{r import_world_bank_world_governance_indices_data}
+
+political_stability <- read_csv("https://raw.githubusercontent.com/kp145322/electricity_supply_security/main/political_stability.csv")
+  View(political_stability)
+
+regulatory_quality <- read_csv("https://raw.githubusercontent.com/kp145322/electricity_supply_security/main/regulatory_quality.csv")
+  View(regulatory_quality)
+
+rule_of_law <- read_csv("https://raw.githubusercontent.com/kp145322/electricity_supply_security/main/rule_of_law.csv")
+  View(rule_of_law)
+```
+
+```{r import_EIA_global_oil_exports_data}
+
+eia_country_oil_exports <- read_csv("https://raw.githubusercontent.com/kp145322/electricity_supply_security/main/eia_country_oil_exports.csv")
+  View(eia_country_oil_exports)
+```
+
+
+# 2. Format data for analysis
+
+
+```{r merge_three_world_bank_index_dataframes}
+
+#Merge political stability, regulatory quality, and rule of law data frames and
+#adjust to create a political risk composite value.
+
+political_join <- full_join(
+  political_stability,
+  regulatory_quality,
+  by = NULL,
+  copy = FALSE,
+  suffix = c(".x", ".y"),
+  keep = FALSE,
+  na_matches = c("na", "never")
+)
+
+political_join_2 <- full_join(
+  political_join,
+  rule_of_law,
+  by = NULL,
+  copy = FALSE,
+  suffix = c(".x", ".y"),
+  keep = FALSE,
+  na_matches = c("na", "never")
+)
+
+political_composite <- political_join_2 %>% 
+  rowwise() %>% 
+    mutate(
+      risk_composite = mean(c(political_stability, regulatory_quality, 
+      rule_of_law))
+    )
+
+#risk_composite is an average of the three governance indices. 
+```
+
+```{r create_political_risk_multiplier}
+
+#We will use political_risk_multiplier to calculate ESMC and ESPI values in 
+#sections 3 and 4. political_risk_multiplier ranges from 1 to 3. 
+#HHI values typically range from 0 to 10,000, and our values for ESMC will range 
+#from 0 to 30,000 due to the political_risk_multiplier.
+
+political_risk_multiplier <-  mutate(
+  political_composite, risk_multiplier = (
+  (5 - (risk_composite + 2.5))*
+  (2/5) + 1
+  )
+)
+```
+
+```{r merge_oil_export_and_political_risk_dataframes}
+
+oil_risk <- inner_join(
+  political_risk_multiplier,
+  eia_country_oil_exports,
+  by = NULL,
+  copy = FALSE,
+  suffix = c(".x", ".y"),
+  keep = FALSE,
+  na_matches = c("na", "never")
+)
+```
+
+
+# 3. Calculate and visualize ESMC for coal, oil, and gas
+
+
+### 3.1 Calculate ESMC_oil
+
+
+```{r calculate_ESMC_oil}
+oil_risk_market_share_squared <- mutate(
+  oil_risk, "market_share_squared" = 
+  (country_oil_exports_mb_per_day * 100 / global_oil_exports_mb_per_day)^2
+)
+
+oil_risk_RWMS <- mutate(
+  oil_risk_market_share_squared, "RWMS" = market_share_squared * risk_multiplier
+)
+
+oil_risk_RWMS_no_na <- na.omit(oil_risk_RWMS)
+
+global_oil_ESMC <- oil_risk_RWMS_no_na %>%
+  group_by(year) %>%
+  summarise(ESMC = sum(RWMS))
+```
+
+
+### 3.2 Calculate ESMC_coal
+
+
+We use "thermal coal" export data as reported by the EIA, which 
+correspondes to the anthracite, bituminous, and sub-bituminous coals used for 
+electricity in South Korea. 
+
+```{r calculate_ESMC_coal}
+
+eia_country_coal_exports <- read_csv("https://raw.githubusercontent.com/kp145322/electricity_supply_security/main/eia_country_coal_exports.csv")
+  View(eia_country_coal_exports)
+
+coal_risk <- inner_join(
+  political_risk_multiplier,
+  eia_country_coal_exports,
+  by = NULL,
+  copy = FALSE,
+  suffix = c(".x", ".y"),
+  keep = FALSE,
+  na_matches = c("na", "never")
+)
+
+coal_risk_market_share_squared <- mutate(
+  coal_risk, "market_share_squared" = (
+    ( 
+      (as.numeric(country_thermal_coal_exports_per_year)) * 100 / 
+      (as.numeric(world_thermal_coal_exports_per_year)
+       )
+    )^2
+  )
+)
+
+coal_risk_RWMS <- mutate(
+  coal_risk_market_share_squared, "RWMS" = market_share_squared * 
+  risk_multiplier
+)
+
+coal_risk_RWMS_no_na <- na.omit(coal_risk_RWMS)
+
+global_coal_ESMC <- coal_risk_RWMS_no_na %>%
+  group_by(year) %>%
+  summarise(ESMC = sum(RWMS))
+```
+
+
+### 3.3 Calculate ESMC_gas
+
+
+```{r calculate_ESMC_gas}
+
+eia_country_gas_exports <- read_csv("https://raw.githubusercontent.com/kp145322/electricity_supply_security/main/eia_country_gas_exports.csv")
+  View(eia_country_gas_exports)
+
+gas_risk <- inner_join(
+  political_risk_multiplier,
+  eia_country_gas_exports,
+  by = NULL,
+  copy = FALSE,
+  suffix = c(".x", ".y"),
+  keep = FALSE,
+  na_matches = c("na", "never")
+)
+
+gas_risk_market_share_squared <- mutate(
+  gas_risk, "market_share_squared" = (
+    ( (as.numeric(country_gas_exports)) * 100 / (as.numeric(world_gas_exports))
+    )^2
+  )
+)
+
+gas_risk_RWMS <- mutate(
+  gas_risk_market_share_squared, "RWMS" = market_share_squared * 
+  risk_multiplier
+)
+
+gas_risk_RWMS_no_na <- na.omit(gas_risk_RWMS)
+
+global_gas_ESMC <- gas_risk_RWMS_no_na %>%
+  group_by(year) %>%
+  summarise(ESMC = sum(RWMS))
+
+global_gas_ESMC_1 <- rename(global_gas_ESMC, ESMC_gas = ESMC)
+
+global_oil_ESMC_1 <- rename(global_oil_ESMC, ESMC_oil = ESMC)
+
+global_gas_ESMC_2 <- full_join(
+  global_gas_ESMC_1,
+  global_oil_ESMC_1,
+  by = NULL,
+  copy = FALSE,
+  suffix = c(".x", ".y"),
+  keep = FALSE,
+  na_matches = c("na", "never")
+)
+
+#import spot-market proportion GIIGNL data
+
+gas_spot_market_proportions <- read_csv("https://raw.githubusercontent.com/kp145322/electricity_supply_security/main/gas_spot_market_proportions.csv")
+  View(gas_spot_market_proportions)
+
+global_gas_ESMC_3 <- 
+  full_join(
+  global_gas_ESMC_2,
+  gas_spot_market_proportions,
+  by = NULL,
+  copy = FALSE,
+  suffix = c(".x", ".y"),
+  keep = FALSE,
+  na_matches = c("na", "never")
+)
+
+global_gas_ESMC_4 <- na.omit(global_gas_ESMC_3)
+
+#create weighted value for ESMC considering proportion of global spot-market vs. oil-indexed sales
+
+global_gas_ESMC_weighted <- mutate(
+  global_gas_ESMC_4, 
+  "ESMC" = (as.numeric(ESMC_gas))*gas_spot_market_proportion + 
+  (as.numeric(ESMC_oil))*gas_oil_indexed_proportion
+)
+```
+
+
+### 3.4 Create a comprehensive ESMC dataframe
+
+
+```{r create_comprehensive_ESMC_dataframe}
+
+global_coal_ESMC_1 = rename(global_coal_ESMC, "ESMC_coal" = "ESMC")
+
+#create global gas ESMC weighed value to join with ESMC_coal
+
+global_gas_ESMC_weighted_1 <- global_gas_ESMC_weighted[c(1,6)]
+
+global_gas_ESMC_weighted_2 <- rename(
+  global_gas_ESMC_weighted_1, ESMC_gas = ESMC
+)
+
+# join ESMC gas and oil to prepare to join to ESMC coal
+
+global_gas_ESMC_weighted_3 <- full_join(
+  global_gas_ESMC_weighted_2,
+  global_oil_ESMC_1,
+  by = NULL,
+  copy = FALSE,
+  suffix = c(".x", ".y"),
+  keep = FALSE,
+  na_matches = c("na", "never")
+)
+
+#join all ESMC values to make a comprehensive dataframe 
+
+global_ESMC_comprehensive <- full_join(
+  global_gas_ESMC_weighted_3, global_coal_ESMC_1
+)
+```
+
+
+### 3.5 Add projections for 2022, 2030, and 2034 to historical dataframes 
+
+
+We will assume ESMC for coal, gas, and oil each remain at the average of their
+levels from 2014-2018 through 2022, 2030, and 2034. 
+
+```{r import_assumed_future_ESMC_values_based_on_2014-2018_average_values}
+
+X2014_to_2018_avg_ESMC_coal <- read_csv("https://raw.githubusercontent.com/kp145322/electricity_supply_security/main/2014_to_2018_avg_ESMC_coal.csv")
+
+X2014_to_2018_avg_ESMC_gas <- read_csv("https://raw.githubusercontent.com/kp145322/electricity_supply_security/main/2014_to_2018_avg_ESMC_gas.csv")
+
+X2014_to_2018_avg_ESMC_oil <- read_csv("https://raw.githubusercontent.com/kp145322/electricity_supply_security/main/2014_to_2018_avg_ESMC_oil.csv")
+
+#merge projected data with historical data for ESMC
+
+global_gas_ESMC_projected_0 <- full_join(
+  global_gas_ESMC_weighted,
+  X2014_to_2018_avg_ESMC_gas,
+  by = NULL,
+  copy = FALSE,
+  suffix = c(".x", ".y"),
+  keep = FALSE,
+  na_matches = c("na", "never")
+)
+
+global_gas_ESMC_projected <- global_gas_ESMC_projected_0[c(1:23),c(1,6)]
+
+global_oil_ESMC_projected <- full_join(
+  global_oil_ESMC,
+  X2014_to_2018_avg_ESMC_oil,
+  by = NULL,
+  copy = FALSE,
+  suffix = c(".x", ".y"),
+  keep = FALSE,
+  na_matches = c("na", "never"))
+
+global_coal_ESMC_projected <- full_join(
+  global_coal_ESMC,
+  X2014_to_2018_avg_ESMC_coal,
+  by = NULL,
+  copy = FALSE,
+  suffix = c(".x", ".y"),
+  keep = FALSE,
+  na_matches = c("na", "never"))
+
+#rename ESMC for more specific ESMC values and merge dataframes for oil, coal, 
+#and gas
+
+global_coal_ESMC_projected_1 = rename(
+  global_coal_ESMC_projected, "ESMC_coal" = "ESMC"
+)
+
+global_gas_ESMC_projected_1 = rename(
+  global_gas_ESMC_projected, "ESMC_gas" = "ESMC"
+)
+
+global_oil_ESMC_projected_1 = rename(
+  global_oil_ESMC_projected, "ESMC_oil" = "ESMC"
+)
+
+#merge the three dataframes to create one dataframe with all historical and 
+#projected ESMC values
+
+global_ESMC_coal_and_gas_projected <- full_join(
+  global_coal_ESMC_projected_1, global_gas_ESMC_projected_1
+)
+
+global_ESMC_comprehensive_projected <- full_join(
+  global_ESMC_coal_and_gas_projected, global_oil_ESMC_projected_1
+)
+```
+
+
+### 3.6 Plot historical ESMC values
+
+
+```{r change_ESMC_data_to_long_format_and_merge_to_plot}
+
+global_coal_ESMC_long <- global_coal_ESMC %>%
+  add_column(Fuel = "coal")
+
+global_gas_ESMC_long <- global_gas_ESMC_weighted %>%
+  add_column(Fuel = "gas")
+
+#select only required variables to vertically merge gas data with coal and oil data
+
+global_gas_ESMC_long_1 <- global_gas_ESMC_long[c(1,6:7)]
+
+global_oil_ESMC_long <- global_oil_ESMC %>%
+  add_column(Fuel = "oil")
+
+#vertically merge coal, gas, and oil ESMC values to plot together
+
+global_ESMC_comprehensive_long <- rbind(
+  global_coal_ESMC_long, global_gas_ESMC_long_1, global_oil_ESMC_long
+)
+
+#plot all ESMC values together using comprehensive long data
+
+global_ESMC_comprehensive_long %>%
+  ggplot(mapping = aes(x=year, y=ESMC, color=Fuel)) + 
+  ylab(expression(paste("ESM",C[pol-f]))) + 
+  xlab(expression(paste("Year"))) +
+  geom_line(method='lm', se=FALSE) +
+  geom_point(aes(shape=Fuel)) +
+  theme_minimal() + 
+  scale_colour_viridis(discrete = T, option = "H") +
+  expand_limits(y=0) + geom_point() +
+  labs(title=(expression(paste("Historical ESM", C[pol-f], " by fuel"))
+              ), subtitle = "global, 1996-2018"
+       ) +
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = 
+        element_text(hjust = 0.5)) +
+  theme(legend.title = element_blank()) +
+    theme(text = element_text(family = "A"))
+```
+
+
+### 3.7 Plot area chart of ESMC_coal contributions by country
+
+Code in following chunk adapted from Charles Bordet as cited by Matt Mazur (2017):
+[mattmazur.com](https://mattmazur.com/2017/04/19/removing-gaps-from-stacked-area-charts-in-r/)
+We use the tidyr 'spread' and 'gather' functions to create a continuous area 
+chart by replacing null values with zero values. 
+
+
+```{r plot_ESMC_coal_area_chart}
+
+#filter out contributions less than or equal to10 units to enhance readability 
+#and plot area chart of ESMC_coal 
+
+coal_risk_RWMS_no_na_greater_than_10 <- filter(coal_risk_RWMS_no_na, RWMS > 10)
+
+coal_risk_RWMS_no_na_greater_than_10_cleaned <- 
+  coal_risk_RWMS_no_na_greater_than_10[c(2,3,16)]
+
+coal_RWMS_area <- coal_risk_RWMS_no_na_greater_than_10_cleaned %>%
+    tidyr::spread(key = wb_country, value = RWMS, fill = 0)
+  
+coal_RWMS_area_1 <- coal_RWMS_area %>% 
+  tidyr::gather(key = wb_country, value = RWMS, -year)
+
+#plot area chart of ESMC_coal contributions by country 
+
+coal_RWMS_area_1 %>% ggplot(mapping=aes(x=year,y=RWMS,fill=wb_country)) + 
+  geom_area(alpha=0.65 , size=0.1, colour="black") +
+  scale_fill_viridis(discrete = T, option = "H", 
+                       
+#remove underscores from key labels and replace them with spaces by coercing
+#lables: 
+                       
+  labels = c("Australia","China","Colombia","Indonesia","Kazakhstan",
+             "North Korea","Netherlands","Poland","Russia","South Africa",
+             "United States","Vietnam")) +
+  
+#label coercion complete
+  
+  theme_minimal() +
+  labs(title=(expression(paste("Historical ESM", C[pol-coal], 
+                               " contributions by country"))), subtitle = 
+    "global, 1996-2018", 
+    caption = expression(paste(
+  "Only contributions greater than 20 displayed to enhance readability"))) +
+  ylab(expression(paste("ESM",C[pol-coal], " contribution"))) + 
+  xlab(expression(paste("Year"))) +
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = 
+        element_text(hjust = 0.5)) +
+  theme(legend.title = element_blank()) +
+  theme(text = element_text(family = "A"))
+```
+
+
+### 3.8 Plot area chart of ESMC_gas contributions by country
+
+Code in following chunk adapted from Charles Bordet as cited by Matt Mazur (2017):
+[mattmazur.com](https://mattmazur.com/2017/04/19/removing-gaps-from-stacked-area-charts-in-r/)
+
+
+```{r plot_ESMC_gas_area_chart}
+
+#filter out contributions less than or equal to 20 units to enhance readability
+#and plot area chart of ESMC_gas contributions by country
+
+gas_risk_RWMS_no_na_greater_than_20 <- filter(gas_risk_RWMS_no_na, RWMS > 20)
+
+#adjust data format to produce a smooth area chart
+
+gas_risk_RWMS_no_na_greater_than_20_cleaned <- 
+  gas_risk_RWMS_no_na_greater_than_20[c(2,3,13)]
+
+gas_RWMS_area <- gas_risk_RWMS_no_na_greater_than_20_cleaned %>%
+  tidyr::spread(key = wb_country, value = RWMS, fill = 0)
+  
+gas_RWMS_area_1 <- gas_RWMS_area %>% 
+  tidyr::gather(key = wb_country, value = RWMS, -year)
+  
+#plot area chart of ESMC_gas contributions by country
+
+gas_RWMS_area_1 %>% ggplot(mapping=aes(x=year,y=RWMS,fill=wb_country)) + 
+     geom_area(alpha=0.65 , size=0.1, colour="black") +
+    scale_fill_viridis(discrete = T, option = "H",
+                       
+##replace underscores with spaces in key labels by coercion
+                       
+  labels = c("Algeria","Australia","Canada","Indonesia",
+             "Malaysia","Netherlands","Norway","Qatar",
+            "Russia","Turkmenistan","United States")
+  
+##label coercion complete
+                    
+                       ) +
+    theme_minimal() +
+  labs(title=(expression(paste("Historical spot-market ESM", C[pol-gas], 
+      " contributions by country"))), subtitle = "global, 1996-2018", caption =
+      "Only contributions greater than 20 displayed to enhance readability") +
+  ylab(expression(paste("ESM",C[pol-gas], " contribution"))) + 
+  xlab(expression(paste("Year"))) +
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = 
+        element_text(hjust = 0.5)) +
+  theme(legend.title = element_blank()) +
+  theme(text = element_text(family = "A"))
+```
+
+
+### 3.9 Plot area chart of ESMC_oil contributions by country
+
+Code in following chunk adapted from Charles Bordet as cited by Matt Mazur (2017):
+[mattmazur.com](https://mattmazur.com/2017/04/19/removing-gaps-from-stacked-area-charts-in-r/)
+
+
+```{r plot_ESMC_oil_area_chart}
+
+#Filter out contributions less than or equal to 20 units to enhance readability
+
+oil_risk_RWMS_no_na_greater_than_20 <- filter(oil_risk_RWMS_no_na, RWMS > 20)
+
+#create a dataframe that will produce a smooth area chart 
+
+oil_risk_RWMS_no_na_greater_than_20_cleaned <- 
+  oil_risk_RWMS_no_na_greater_than_20[c(2,3,13)]
+
+oil_RWMS_area <- oil_risk_RWMS_no_na_greater_than_20_cleaned %>%
+  tidyr::spread(key = wb_country, value = RWMS, fill = 0)
+  
+oil_RWMS_area_1 <- oil_RWMS_area %>% 
+  tidyr::gather(key = wb_country, value = RWMS, -year)
+
+#plot area chart of ESMC_gas contribution by country
+
+oil_RWMS_area_1 %>% ggplot(mapping=aes(x=year,y=RWMS,fill=wb_country)) + 
+     geom_area(alpha=0.65 , size=0.1, colour="black") +
+    scale_fill_viridis(discrete = T, option = "H",
+                       
+##replace underscores in key labels with spaces by coercion
+                       
+  labels = c("Angola", "Canada", "Iran", "Iraq", "Kazakhstan", "Kuwait", 
+             "Libya", "Mexico", "Nigeria", "Norway", "Russia", "Saudi Arabia", 
+             "United Arab Emirates", "United Kingdom", "United States", 
+             "Venezuela")
+  
+##label coercion complete
+        
+                       ) +
+    theme_minimal() +
+  labs(title=(expression(paste("Historical ESM", C[pol-oil], " contributions by country"))), subtitle = "global, 1996-2018", caption =
+      "Only contributions greater than 20 displayed to enhance readability") +
+  expand_limits(y=1600) +
+  ylab(expression(paste("ESM",C[pol-oil], " contribution"))) + 
+  xlab(expression(paste("Year"))) +
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = 
+        element_text(hjust = 0.5)) +
+  theme(legend.title = element_blank()) +
+  theme(text = element_text(family = "A"))
+```
+
+
+# 4. Calculate and plot historical and projected ESPI_gen values
+
+
+```{r calculate ESPI_gen}
+#import historical Korea electricity generation data
+
+korea_electricity_generation <- read_csv("https://raw.githubusercontent.com/kp145322/electricity_supply_security/main/korea_electricity_generation.csv")
+
+ESMC_and_generation <- inner_join(
+  global_ESMC_comprehensive, korea_electricity_generation
+)
+
+ESPI_gen <- mutate(
+  ESMC_and_generation, "ESPI_gen" = coal_electricity_percent*ESMC_coal/100 + 
+  oil_electricity_percent*ESMC_oil/100 + gas_electricity_percent*ESMC_gas/100 + 
+  nuclear_and_renewables_electricity_percent*0/100
+)
+
+#import planned Korea electricity generation data from BPLE and join projected 
+#ESMC data with projected generation data
+
+korea_electricity_generation_projected <- read_csv("https://raw.githubusercontent.com/kp145322/electricity_supply_security/main/korea_electricity_generation_projected.csv")
+
+korea_electricity_generation_historical_and_projected <- 
+  full_join(
+  korea_electricity_generation, korea_electricity_generation_projected
+)
+
+ESMC_and_generation_projected <- inner_join(
+  global_ESMC_comprehensive_projected, 
+  korea_electricity_generation_historical_and_projected
+)
+
+ESPI_gen_projected <- mutate(
+  ESMC_and_generation_projected, "ESPI_gen" = 
+  coal_electricity_percent*ESMC_coal/100 + 
+  oil_electricity_percent*ESMC_oil/100 + gas_electricity_percent*ESMC_gas/100 + 
+  nuclear_and_renewables_electricity_percent*0/100
+)
+```
+
+```{r create_status-quo_projection_dataframe_for_ESPI_gen}
+
+#create status-quo ESPI-gen projection dataframe
+
+korea_electricity_generation_status_quo_projections <- read_csv("https://raw.githubusercontent.com/kp145322/electricity_supply_security/main/korea_electricity_generation_status_quo_projections.csv")
+
+korea_electricity_generation_historical_and_status_quo_projected <- 
+  full_join(
+  korea_electricity_generation, korea_electricity_generation_status_quo_projections
+)
+
+ESMC_and_generation_status_quo_projected <- inner_join(
+  global_ESMC_comprehensive_projected, 
+  korea_electricity_generation_historical_and_status_quo_projected
+)
+
+ESPI_gen_status_quo_projected <- mutate(
+  ESMC_and_generation_status_quo_projected, "ESPI_gen" = 
+  coal_electricity_percent*ESMC_coal/100 + 
+  oil_electricity_percent*ESMC_oil/100 + 
+  gas_electricity_percent*ESMC_gas/100 + 
+  nuclear_and_renewables_electricity_percent*0/100
+)
+```
+
+```{r plot_projected_and_historical_ESPI_gen_together}
+
+#create long BPLE ESPIgen projection data
+
+ESPI_gen_projected_long <- ESPI_gen_projected %>%
+  add_column(projection = "9th_BPLE")
+
+  # select only required variables to vertically merge BPLE and status quo projections 
+
+ESPI_gen_projected_long_1 <- ESPI_gen_projected_long[c(1,16,17)]
+
+ESPI_gen_projected_long_2 <- subset(ESPI_gen_projected_long_1, year>=2018)
+
+#create long status-quo ESPIgen projection data
+
+ESPI_gen_status_quo_projected_long <- ESPI_gen_status_quo_projected %>%
+  add_column(projection = "status_quo")
+
+#cut extraneous data
+
+ESPI_gen_status_quo_projected_long_1 <- 
+  ESPI_gen_status_quo_projected_long[c(1,11,12)]
+
+ESPI_gen_status_quo_projected_long_2 <- 
+  subset(ESPI_gen_status_quo_projected_long_1, year>=2018)
+
+#create historical long ESPIgen data to plot with projections
+
+ESPI_gen_historical_long <- ESPI_gen[c(1,11)]
+
+ESPI_gen_historical_long_1 <- ESPI_gen_historical_long %>%
+  add_column(projection = "historical")
+
+#vertically merge long ESPI_gen projection data for BPLE and status quo
+
+ESPI_gen_projected_comprehensive_long <- rbind(
+  ESPI_gen_projected_long_2, ESPI_gen_status_quo_projected_long_2, 
+  ESPI_gen_historical_long_1
+)
+
+#plot both ESPI_gen projections together
+
+ESPI_gen_projected_comprehensive_long %>%
+  ggplot(mapping = aes(x=year, y=ESPI_gen, color=projection)) + 
+  ylab(expression(paste("ESP",I[gen]))) + 
+  xlab(expression(paste("Year"))) +
+  geom_line(method='lm', se=FALSE) + 
+  theme_minimal() + 
+  expand_limits(y=0) + 
+  geom_point(aes(shape=projection)) + 
+# geom_vline(xintercept=c(2018), linetype="dotted") +
+  labs(title=(expression(paste("Historical and projected ESP", I[gen]))) , 
+       subtitle = "South Korea, 1996-2034") + 
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = 
+        element_text(hjust = 0.5)) +
+  scale_colour_viridis(discrete = T, option = "H" , labels = c("9th BPLE-based projections", "historical values", "status quo-based projections")) +
+ # annotate("text", x=2022,y=1100,label="Projected", size=3, text = element_text(family = "A")) + 
+ # annotate("text", x=2014,y=1100,label="Historical", size=3, text = element_text(family = "A"))+
+  annotate("text", x=2021,y=1750,label="(2022,1824)", size=2.9, text = element_text(family = "A")) +
+  annotate("text", x=2028,y=1640,label="(2030,1711)", size=2.9, text = element_text(family = "A")) +
+  annotate("text", x=2033,y=1550,label="(2034,1602)", size=2.9, text = element_text(family = "A")) +
+  annotate("text", x=2033.5,y=1950,label="(2034,2053)", size=2.9, text = element_text(family = "A")) +
+  theme(legend.title = element_blank()) +
+  guides(shape=FALSE) +                                      
+  theme(text = element_text(family = "A"))
+```
+
+
+# 5. Create table of ESMC results
+
+
+We produce a table of our calculations of ESMC_coal, ESMC_gas, ESMC_oil, 
+historical ESPI_gen, and ESPI_gen projections for 2022, 2030, and 2034 under 
+status-quo and BPLE-based assumptions.
+
+Code for APA-style table adapted from Phillip Parker:
+[pdparker/apa_style_gt.R](https://gist.github.com/pdparker/1b61b6d36d09cb295bf286a931990159)
+
+```{r create_table_of_ESMC_results}
+
+#create joined dataframe of all historical ESMC and ESPI values as table 1
+
+global_gas_ESMC_5 <- global_gas_ESMC_long_1[c(1,2)]
+
+global_gas_ESMC_6 <- global_gas_ESMC_5 %>%
+  rename(ESMC_gas_weighted = "ESMC")
+
+table_1 <- full_join(global_coal_ESMC_1, global_oil_ESMC_1) %>%
+  full_join(global_gas_ESMC_6)%>%
+  full_join(ESPI_gen_historical_long)
+
+table_1_rounded <- round_half_up(table_1, digits = 0)
+
+table_1_rounded_printed <- table_1_rounded %>%
+  gt() %>%
+  tab_header(
+    title = html("Calculated Historical Values for ESMC<sub>pol-f</sub><sup>1</sup> and ESPI<sub>gen</sub><sup>2"),
+    subtitle = "for years 1996-2018 with available data"
+  ) %>%
+  tab_source_note(md("Original data from the World Bank, U.S. EIA, GIIGNL, and MOTIE<br>
+                     1. ESMC<sub>pol-f</sub> represents global values<br>
+                     2. ESPI<sub>gen</sub> represents values for South Korea"))%>%
+    cols_label(
+    year = html("Year"),
+    ESMC_coal = html("ESMC<sub>pol-coal"),
+    ESMC_oil = html("ESMC<sub>pol-oil"),
+    ESMC_gas_weighted = html("ESMC<sub>pol-gas"),
+    ESPI_gen = html("ESPI<sub>gen"),
+  ) %>%
+    opt_table_lines(extent = "default") %>%
+    tab_options(
+      heading.border.bottom.width = 2,
+      heading.border.bottom.color = "black",
+      heading.border.bottom.style = "solid",
+      table.border.top.color = "black",
+      table_body.hlines.color = "black",
+      table_body.hlines.style = "solid",
+      table_body.hlines.width = 0.5,
+      table_body.border.top.color = "black",
+      table_body.border.top.style = "solid",
+      table_body.border.top.width = 1,
+      heading.title.font.size = 11,
+      table.font.size = 11,
+      heading.subtitle.font.size = 11,
+      table_body.border.bottom.color = "black",
+      table_body.border.bottom.width = 1,
+      table_body.border.bottom.style = "solid",
+      column_labels.border.bottom.color = "black",
+      column_labels.border.bottom.style = "solid",
+      column_labels.border.bottom.width = 1,
+      data_row.padding = px(3)
+    ) %>%
+      opt_table_font(font = "times")
+
+table_1_rounded_printed
+
+# this segment prints table 1 for export
+# table_1_rounded_printed %>%
+#   gtsave(
+#     "tab_1.png", expand = 10,
+#   )
+```
+
+
+# 6. Visualize electricity generation proportion by fuel source
+
+
+```{r create_electricity_generation_area_chart}
+
+korea_electricity_generation_area_chart <- korea_electricity_generation[3:7]
+
+#split Korea generation data into three data frames, make them long data, 
+#then combine them vertically and plot with a area chart
+
+korea_electricity_generation_coal_long <- 
+  korea_electricity_generation_area_chart[c(1,2)] %>%
+  add_column(fuel = "coal") %>%
+  rename("percent" = coal_electricity_percent)
+
+korea_electricity_generation_gas_long <- 
+  korea_electricity_generation_area_chart[c(1,3)] %>%
+  add_column(fuel = "gas") %>%
+  rename("percent" = gas_electricity_percent)
+
+korea_electricity_generation_oil_long <- 
+  korea_electricity_generation_area_chart[c(1,4)] %>%
+  add_column(fuel = "oil") %>%
+  rename("percent" = oil_electricity_percent)
+
+korea_electricity_generation_nuclear_and_renewables_long <- 
+  korea_electricity_generation_area_chart[c(1,5)] %>%
+  add_column(fuel = "nuclear_and_renewables") %>%
+  rename("percent" = nuclear_and_renewables_electricity_percent)
+
+#vertically merge the new long data frames 
+
+korea_electricity_generation_area_chart_long <- 
+  rbind(korea_electricity_generation_coal_long, 
+        korea_electricity_generation_gas_long, 
+        korea_electricity_generation_oil_long, 
+        korea_electricity_generation_nuclear_and_renewables_long)
+
+#filter for years 1996-2018
+
+korea_electricity_generation_area_chart_long_1 <- 
+  filter(korea_electricity_generation_area_chart_long, year>= 1996) %>%
+  filter(year <= 2018)
+
+#plot area chart of long generation proportion data frame
+
+korea_electricity_generation_area_chart_long_1 %>% 
+  ggplot(mapping=aes(x=year,y=percent,fill=fuel)) + 
+     geom_area(alpha=0.6 , size=0.1, colour="black") +
+    scale_fill_viridis(discrete = T, option = "H", 
+                       
+  #begin coerce labels
+                       
+  labels = c("coal", "gas", "nuclear and renewable", "oil")
+  
+  #end coerce labels
+                       
+  ) +
+  theme_minimal() +
+  labs(title=(expression(paste("Historical electricity generation percent share by fuel"))), 
+       subtitle= "South Korea, 1996-2018", 
+       caption =
+      "Data compiled from BP Statistical Review of World Energy by Our World in Data") +
+  ylab(expression(paste("percent share"))) + 
+  xlab(expression(paste("Year"))) +
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = 
+        element_text(hjust = 0.5)) +
+  theme(legend.title = element_blank()) +
+  theme(text = element_text(family = "A"))
+```
