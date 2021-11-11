@@ -1,11 +1,16 @@
 ---
 title: "Analysis for quantifying electricity supply security in South Korea"
 author: "Kenneth Piech"
-date: "10/4/2021"
+date: "11/11/2021"
 output:
   html_document: default
   pdf_document: default
   word_document: default
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+ encoding=encoding,
+ output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
 ---
 This is an R markdown document recording analysis for *Quantifying electricity 
 supply security in South Korea: historical values and projections* by Kenneth 
